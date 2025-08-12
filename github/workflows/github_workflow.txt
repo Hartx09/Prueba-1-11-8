@@ -1,0 +1,128 @@
+name: Crystal Kingdom iOS Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Instalar dependencias npm
+      run: npm ci
+    
+    - name: Cache CocoaPods
+      uses: actions/cache@v3
+      with:
+        path: ios/Pods
+        key: ${{ runner.os }}-pods-${{ hashFiles('**/Podfile.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-pods-
+    
+    - name: Instalar CocoaPods
+      run: |
+        cd ios
+        pod install --repo-update
+        cd ..
+    
+    - name: Build iOS (Debug)
+      run: |
+        npx react-native run-ios --configuration Debug --simulator "iPhone 14"
+    
+    - name: Ejecutar tests
+      run: npm test
+    
+    - name: Lint código
+      run: npm run lint
+
+  archive-ios:
+    runs-on: macos-latest
+    if: github.ref == 'refs/heads/main'
+    needs: build-ios
+    
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Instalar dependencias
+      run: npm ci
+    
+    - name: Pod install
+      run: |
+        cd ios
+        pod install
+        cd ..
+    
+    - name: Import Code-Signing Certificates
+      uses: Apple-Actions/import-codesign-certs@v1
+      with:
+        p12-file-base64: ${{ secrets.IOS_DIST_SIGNING_KEY }}
+        p12-password: ${{ secrets.IOS_DIST_SIGNING_KEY_PASSWORD }}
+    
+    - name: Download Provisioning Profiles
+      uses: Apple-Actions/download-provisioning-profiles@v1
+      with:
+        bundle-id: 'com.crystalkingdom.app'
+        issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+        api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+        api-private-key: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+    
+    - name: Build Archive
+      run: |
+        cd ios
+        xcodebuild -workspace CrystalKingdom.xcworkspace \
+                   -scheme CrystalKingdom \
+                   -configuration Release \
+                   -destination generic/platform=iOS \
+                   -archivePath CrystalKingdom.xcarchive \
+                   archive
+    
+    - name: Export IPA
+      run: |
+        cd ios
+        xcodebuild -exportArchive \
+                   -archivePath CrystalKingdom.xcarchive \
+                   -exportPath export \
+                   -exportOptionsPlist ExportOptions.plist
+    
+    - name: Upload to TestFlight
+      uses: Apple-Actions/upload-testflight-build@v1
+      with:
+        app-path: 'ios/export/CrystalKingdom.ipa'
+        issuer-id: ${{ secrets.APPSTORE_ISSUER_ID }}
+        api-key-id: ${{ secrets.APPSTORE_KEY_ID }}
+        api-private-key: ${{ secrets.APPSTORE_PRIVATE_KEY }}
+
+  test-coverage:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    - name: Install dependencies
+      run: npm ci
+    - name: Run tests with coverage
+      run: npm run test:coverage
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
